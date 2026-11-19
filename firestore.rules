@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Only your verified Google account counts as the owner.
+    // Replace the email below (same one as OWNER_EMAIL in firebase-config.js).
+    function isOwner() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'YOUR_OWNER_EMAIL';
+    }
+
+    function validProject(d) {
+      return d.title is string && d.title.size() > 0 && d.title.size() <= 120
+        && d.category in ['Web', 'Systems', 'Brand / Logo', 'Automation']
+        && d.description is string && d.description.size() <= 2000
+        && d.tags is list && d.tags.size() <= 20
+        && d.link is string && d.link.size() <= 500
+        && d.imageUrl is string && d.imageUrl.size() <= 500
+        && d.createdAt is number;
+    }
+
+    match /projects/{projectId} {
+      allow read: if true;                       // everyone can view
+      allow create, update: if isOwner() && validProject(request.resource.data);
+      allow delete: if isOwner();
+    }
+  }
+}
