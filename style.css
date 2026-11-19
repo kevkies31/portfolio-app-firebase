@@ -107,6 +107,21 @@ button.danger { background: var(--danger); }
   border: 1px solid #22314d;
   border-radius: 8px;
 }
+.managed-category-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.managed-category-list li {
+  padding: 0.35rem 0.65rem;
+  background: #1a2a45;
+  color: var(--accent);
+  border-radius: 999px;
+}
+.error { color: #f87171; }
 
 .badge {
   display: inline-block;

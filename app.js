@@ -8,7 +8,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js';
 import { firebaseConfig, OWNER_EMAIL } from './firebase-config.js';
 
-const CATEGORIES = ['Web', 'Systems', 'Brand / Logo', 'Automation'];
+const DEFAULT_CATEGORIES = ['Web', 'Systems', 'Brand / Logo', 'Automation'];
 
 // ---------- Page elements ----------
 const mainEl = document.querySelector('#main');
@@ -34,9 +34,17 @@ const authBtn = document.querySelector('#auth-btn');
 const authStatus = document.querySelector('#auth-status');
 const clearAllBtn = document.querySelector('#clear-all-btn');
 const exportBtn = document.querySelector('#export-btn');
+const importBtn = document.querySelector('#import-btn');
+const importInput = document.querySelector('#import-file');
+const categoryCard = document.querySelector('#category-card');
+const categoryForm = document.querySelector('#category-form');
+const categoryNameInput = document.querySelector('#category-name');
+const categoryListEl = document.querySelector('#category-list');
+const categoryErrorEl = document.querySelector('#category-error');
 
 let activeCategory = 'All';
 let all = [];        // every project, newest first
+let categories = [];
 let owner = false;   // true only for the owner's account
 
 function escapeHTML(value = '') {
@@ -57,6 +65,7 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
 const projectsRef = collection(db, 'projects');
+const categoriesRef = collection(db, 'categories');
 
 // ---------- Login (owner only) ----------
 function isOwner(user) {
@@ -78,10 +87,12 @@ authBtn.addEventListener('click', async () => {
   }
 });
 
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
   owner = isOwner(user);
   formCard.hidden = !owner;
+  categoryCard.hidden = !owner;
   clearAllBtn.hidden = !owner;
+  importBtn.hidden = !owner;
   mainEl.classList.toggle('viewer', !owner);
   authBtn.textContent = user ? 'Sign out' : 'Owner sign in';
 
@@ -94,7 +105,9 @@ onAuthStateChanged(auth, (user) => {
   }
 
   if (!owner) resetForm();
+  renderTabs();
   render();
+  await refresh();
 });
 
 // ---------- Tabs ----------
@@ -103,10 +116,10 @@ function tabLabel(name) {
 }
 
 function renderTabs() {
-  const names = ['All', ...CATEGORIES];
-  tabsEl.innerHTML = names.map((name) => `
-    <button type="button" class="tab ${name === activeCategory ? 'active' : ''}"
-            data-tab="${escapeHTML(name)}">${escapeHTML(tabLabel(name))}</button>
+  const tabs = [{ id: 'All', name: 'All' }, ...getDisplayCategories()];
+  tabsEl.innerHTML = tabs.map(({ id, name }) => `
+    <button type="button" class="tab ${id === activeCategory ? 'active' : ''}"
+            data-tab="${escapeHTML(id)}">${escapeHTML(tabLabel(name))}</button>
   `).join('');
 }
 
@@ -118,15 +131,41 @@ tabsEl.addEventListener('click', (event) => {
   render();
 });
 
+function getProjectCategory(project) {
+  const referenced = categories.find((category) => category.id === project.categoryRef?.id);
+  const legacy = categories.find((category) => category.name === project.category);
+  if (referenced || legacy) return referenced || legacy;
+  return {
+    id: `legacy:${project.category || 'uncategorized'}`,
+    name: project.category || 'Uncategorized'
+  };
+}
+
+function getDisplayCategories() {
+  const result = [...categories];
+  const knownIds = new Set(result.map((category) => category.id));
+  all.forEach((project) => {
+    const category = getProjectCategory(project);
+    if (!knownIds.has(category.id)) {
+      knownIds.add(category.id);
+      result.push(category);
+    }
+  });
+  return result;
+}
+
 function fillCategoryOptions() {
-  CATEGORIES.forEach((name) => categoryInput.add(new Option(name, name)));
+  categoryInput.replaceChildren(new Option('Choose a category...', ''));
+  categories.forEach((category) => {
+    categoryInput.add(new Option(category.name, category.id));
+  });
 }
 
 // ---------- Form helpers ----------
 function readForm() {
   return {
     title: titleInput.value.trim(),
-    category: categoryInput.value,
+    categoryRef: doc(categoriesRef, categoryInput.value),
     description: descriptionInput.value.trim(),
     tags: tagsInput.value.split(',').map((t) => t.trim()).filter(Boolean),
     link: linkInput.value.trim(),
@@ -139,7 +178,8 @@ function readForm() {
 function startEdit(project) {
   idInput.value = project.id;
   titleInput.value = project.title;
-  categoryInput.value = project.category;
+  const category = getProjectCategory(project);
+  categoryInput.value = categories.some((item) => item.id === category.id) ? category.id : '';
   descriptionInput.value = project.description || '';
   tagsInput.value = (project.tags || []).join(', ');
   linkInput.value = project.link || '';
@@ -172,14 +212,66 @@ async function loadAll() {
   return true;
 }
 
+async function loadCategories() {
+  try {
+    let snap = await getDocs(categoriesRef);
+    const existingNames = new Set(
+      snap.docs.map((category) => String(category.data().name || '').toLowerCase())
+    );
+    const missingDefaults = owner
+      ? DEFAULT_CATEGORIES.filter((name) => !existingNames.has(name.toLowerCase()))
+      : [];
+
+    if (missingDefaults.length > 0) {
+      const batch = writeBatch(db);
+      missingDefaults.forEach((name) => {
+        batch.set(doc(categoriesRef), { name, createdAt: Date.now() });
+      });
+      await batch.commit();
+      snap = await getDocs(categoriesRef);
+    }
+
+    categories = snap.docs
+      .map((category) => ({
+        id: category.id,
+        name: category.data().name,
+        ref: category.ref
+      }))
+      .filter((category) => typeof category.name === 'string')
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    categoryErrorEl.textContent = '';
+    categoryListEl.innerHTML = categories.map((category) => `
+      <li>${escapeHTML(category.name)}</li>
+    `).join('');
+    fillCategoryOptions();
+    renderTabs();
+    return true;
+  } catch (err) {
+    categories = [];
+    categoryListEl.textContent = '';
+    categoryInput.replaceChildren(new Option('Categories unavailable', ''));
+    categoryErrorEl.textContent = `Could not load categories: ${err.message}`;
+    renderTabs();
+    return false;
+  }
+}
+
 async function loadCategoryCounts() {
   categoryCountsEl.textContent = 'Loading category counts...';
   try {
-    const counts = await Promise.all(CATEGORIES.map(async (category) => {
-      const result = await getCountFromServer(
-        query(projectsRef, where('category', '==', category))
-      );
-      return { category, count: result.data().count };
+    const counts = await Promise.all(getDisplayCategories().map(async (category) => {
+      let referencedCount = 0;
+      if (category.ref) {
+        const result = await getCountFromServer(
+          query(projectsRef, where('categoryRef', '==', category.ref))
+        );
+        referencedCount = result.data().count;
+      }
+      const legacyCount = all.filter((project) =>
+        !project.categoryRef && project.category === category.name
+      ).length;
+      return { category: category.name, count: referencedCount + legacyCount };
     }));
     categoryCountsEl.innerHTML = counts.map(({ category, count }) => `
       <li><span>${escapeHTML(category)}</span><strong>${count}</strong></li>
@@ -194,7 +286,7 @@ function render() {
 
   let list = activeCategory === 'All'
     ? [...all]
-    : all.filter((p) => p.category === activeCategory);
+    : all.filter((project) => getProjectCategory(project).id === activeCategory);
 
   if (text) {
     list = list.filter((p) =>
@@ -226,7 +318,7 @@ function render() {
       ${(p.imageUrl || '').startsWith('https://')
         ? `<img class="thumb" src="${escapeHTML(p.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
         : ''}
-      <span class="badge">${escapeHTML(p.category)}</span>
+      <span class="badge">${escapeHTML(getProjectCategory(p).name)}</span>
       <h3>${escapeHTML(p.title)}${p.featured === true
         ? ' <span class="featured-star" role="img" aria-label="Featured">★</span>'
         : ''}</h3>
@@ -246,8 +338,13 @@ function render() {
 }
 
 async function refresh() {
-  const [loaded] = await Promise.all([loadAll(), loadCategoryCounts()]);
-  if (loaded) render();
+  const categoriesLoaded = await loadCategories();
+  const loaded = await loadAll();
+  if (categoriesLoaded) await loadCategoryCounts();
+  if (loaded) {
+    renderTabs();
+    render();
+  }
 }
 
 // ---------- Create / Update / Delete ----------
@@ -255,6 +352,10 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!owner) return;
 
+  if (!categoryInput.value) {
+    alert('Choose a category before saving the project.');
+    return;
+  }
   const data = readForm();
   if (data.imageUrl && !data.imageUrl.startsWith('https://')) {
     alert('The thumbnail URL must start with https://');
@@ -328,13 +429,134 @@ clearAllBtn.addEventListener('click', async () => {
   if (shouldRefresh) await refresh();
 });
 
+categoryForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!owner) return;
+
+  const name = categoryNameInput.value.trim();
+  if (!name || name.length > 60) {
+    alert('Category names must be between 1 and 60 characters.');
+    return;
+  }
+  if (categories.some((category) => category.name.toLowerCase() === name.toLowerCase())) {
+    alert('A category with that name already exists.');
+    return;
+  }
+
+  try {
+    await addDoc(categoriesRef, { name, createdAt: Date.now() });
+    categoryForm.reset();
+    await refresh();
+  } catch (err) {
+    alert(`Could not add category: ${err.message}`);
+  }
+});
+
+function prepareImportedProjects(value) {
+  if (!Array.isArray(value)) {
+    throw new Error('The JSON file must contain an array of projects.');
+  }
+
+  return value.map((project, index) => {
+    const fail = (message) => {
+      throw new Error(`Project ${index + 1}: ${message}`);
+    };
+    if (!project || typeof project !== 'object' || Array.isArray(project)) {
+      fail('expected a project object.');
+    }
+
+    const title = typeof project.title === 'string' ? project.title.trim() : '';
+    if (!title || title.length > 120) fail('title must be between 1 and 120 characters.');
+
+    const category = categories.find((item) =>
+      typeof project.category === 'string' &&
+      item.name.toLowerCase() === project.category.trim().toLowerCase()
+    ) || categories.find((item) => item.id === project.categoryId);
+    if (!category) fail('category was not found. Add the category before importing.');
+
+    const description = project.description === undefined ? '' : project.description;
+    const tags = project.tags === undefined ? [] : project.tags;
+    const link = project.link === undefined ? '' : project.link;
+    const imageUrl = project.imageUrl === undefined ? '' : project.imageUrl;
+    const year = project.year === undefined ? null : project.year;
+    const featured = project.featured === undefined ? false : project.featured;
+
+    if (typeof description !== 'string' || description.length > 2000) {
+      fail('description must be a string of at most 2,000 characters.');
+    }
+    if (!Array.isArray(tags) || tags.length > 20 || tags.some((tag) => typeof tag !== 'string')) {
+      fail('tags must be an array of at most 20 strings.');
+    }
+    if (typeof link !== 'string' || link.length > 500) {
+      fail('link must be a string of at most 500 characters.');
+    }
+    if (typeof imageUrl !== 'string' || imageUrl.length > 500 ||
+        (imageUrl && !imageUrl.startsWith('https://'))) {
+      fail('image URL must be empty or an HTTPS URL of at most 500 characters.');
+    }
+    if (year !== null && (!Number.isInteger(year) || year < 1900 || year > 2100)) {
+      fail('year must be null or a whole number between 1900 and 2100.');
+    }
+    if (typeof featured !== 'boolean') fail('featured must be true or false.');
+
+    return {
+      title,
+      categoryRef: category.ref,
+      description,
+      tags,
+      link,
+      imageUrl,
+      year,
+      featured,
+      createdAt: Number.isFinite(project.createdAt) ? project.createdAt : Date.now()
+    };
+  });
+}
+
+importBtn.addEventListener('click', () => importInput.click());
+importInput.addEventListener('change', async () => {
+  const file = importInput.files[0];
+  if (!file || !owner) return;
+
+  let imported = 0;
+  try {
+    const projects = prepareImportedProjects(JSON.parse(await file.text()));
+    if (projects.length === 0) {
+      alert('The JSON file contains no projects to import.');
+      return;
+    }
+    if (!confirm(`Import ${projects.length} projects?`)) return;
+
+    for (let start = 0; start < projects.length; start += 500) {
+      const batch = writeBatch(db);
+      const chunk = projects.slice(start, start + 500);
+      chunk.forEach((project) => batch.set(doc(projectsRef), project));
+      await batch.commit();
+      imported += chunk.length;
+    }
+    await refresh();
+    alert(`Imported ${imported} project(s).`);
+  } catch (err) {
+    const partial = imported ? ` ${imported} project(s) were already imported.` : '';
+    alert(`Could not import projects:${partial} ${err.message}`);
+  } finally {
+    importInput.value = '';
+  }
+});
+
 exportBtn.addEventListener('click', async () => {
   try {
     const snapshot = await getDocs(projectsRef);
-    const projects = snapshot.docs.map((project) => ({
-      id: project.id,
-      ...project.data()
-    }));
+    const projects = snapshot.docs.map((project) => {
+      const data = project.data();
+      const fields = { ...data };
+      delete fields.categoryRef;
+      return {
+        id: project.id,
+        ...fields,
+        category: getProjectCategory(data).name
+      };
+    });
     const blob = new Blob([JSON.stringify(projects, null, 2)], {
       type: 'application/json'
     });
@@ -355,6 +577,4 @@ cancelBtn.addEventListener('click', resetForm);
 searchInput.addEventListener('input', render);
 
 // ---------- Start ----------
-fillCategoryOptions();
 renderTabs();
-refresh();

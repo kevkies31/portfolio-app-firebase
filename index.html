@@ -65,9 +65,23 @@
       </form>
     </section>
 
+    <section class="card" id="category-card" hidden>
+      <h2>Manage categories</h2>
+      <form id="category-form">
+        <label>Category name
+          <input type="text" id="category-name" required maxlength="60" />
+        </label>
+        <button type="submit">Add category</button>
+      </form>
+      <p id="category-error" class="error" role="alert"></p>
+      <ul id="category-list" class="managed-category-list"></ul>
+    </section>
+
     <section class="card">
       <div class="toolbar">
         <input type="search" id="search" placeholder="Search title or tags..." />
+        <button type="button" id="import-btn" class="ghost" hidden>Import JSON</button>
+        <input type="file" id="import-file" accept=".json,application/json" hidden />
         <button type="button" id="export-btn" class="ghost">Export JSON</button>
         <button type="button" id="clear-all-btn" class="danger" hidden>Clear all</button>
       </div>
