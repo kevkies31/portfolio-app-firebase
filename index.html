@@ -49,6 +49,15 @@
           <input type="url" id="image-url" placeholder="https://..." />
         </label>
 
+        <label>Year (optional, 1900-2100)
+          <input type="number" id="year" min="1900" max="2100" step="1" />
+        </label>
+
+        <label class="checkbox-label">
+          <input type="checkbox" id="featured" />
+          Featured project
+        </label>
+
         <div class="actions">
           <button type="submit">Save project</button>
           <button type="button" id="cancel-btn" hidden>Cancel</button>
@@ -59,8 +68,12 @@
     <section class="card">
       <div class="toolbar">
         <input type="search" id="search" placeholder="Search title or tags..." />
+        <button type="button" id="export-btn" class="ghost">Export JSON</button>
+        <button type="button" id="clear-all-btn" class="danger" hidden>Clear all</button>
       </div>
       <div id="tabs" class="tabs"></div>
+      <h2 class="category-count-heading">Projects by category</h2>
+      <ul id="category-counts" class="category-counts"></ul>
       <p id="count"></p>
       <div id="project-list"></div>
     </section>

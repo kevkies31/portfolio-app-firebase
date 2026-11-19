@@ -17,7 +17,9 @@ service cloud.firestore {
         && d.tags is list && d.tags.size() <= 20
         && d.link is string && d.link.size() <= 500
         && d.imageUrl is string && d.imageUrl.size() <= 500
-        && d.createdAt is number;
+        && d.createdAt is number
+        && d.featured is bool
+        && (d.year == null || (d.year is int && d.year >= 1900 && d.year <= 2100));
     }
 
     match /projects/{projectId} {

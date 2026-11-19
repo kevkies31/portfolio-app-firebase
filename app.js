@@ -1,7 +1,7 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js';
 import {
   getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc,
-  query, orderBy
+  query, orderBy, where, getCountFromServer, writeBatch
 } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
@@ -22,13 +22,18 @@ const descriptionInput = document.querySelector('#description');
 const tagsInput = document.querySelector('#tags');
 const linkInput = document.querySelector('#link');
 const imageInput = document.querySelector('#image-url');
+const yearInput = document.querySelector('#year');
+const featuredInput = document.querySelector('#featured');
 const cancelBtn = document.querySelector('#cancel-btn');
 const searchInput = document.querySelector('#search');
 const listEl = document.querySelector('#project-list');
 const countEl = document.querySelector('#count');
+const categoryCountsEl = document.querySelector('#category-counts');
 const tabsEl = document.querySelector('#tabs');
 const authBtn = document.querySelector('#auth-btn');
 const authStatus = document.querySelector('#auth-status');
+const clearAllBtn = document.querySelector('#clear-all-btn');
+const exportBtn = document.querySelector('#export-btn');
 
 let activeCategory = 'All';
 let all = [];        // every project, newest first
@@ -76,6 +81,7 @@ authBtn.addEventListener('click', async () => {
 onAuthStateChanged(auth, (user) => {
   owner = isOwner(user);
   formCard.hidden = !owner;
+  clearAllBtn.hidden = !owner;
   mainEl.classList.toggle('viewer', !owner);
   authBtn.textContent = user ? 'Sign out' : 'Owner sign in';
 
@@ -124,7 +130,9 @@ function readForm() {
     description: descriptionInput.value.trim(),
     tags: tagsInput.value.split(',').map((t) => t.trim()).filter(Boolean),
     link: linkInput.value.trim(),
-    imageUrl: imageInput.value.trim()
+    imageUrl: imageInput.value.trim(),
+    year: yearInput.value === '' ? null : Number(yearInput.value),
+    featured: featuredInput.checked
   };
 }
 
@@ -136,6 +144,8 @@ function startEdit(project) {
   tagsInput.value = (project.tags || []).join(', ');
   linkInput.value = project.link || '';
   imageInput.value = project.imageUrl || '';
+  yearInput.value = project.year ?? '';
+  featuredInput.checked = project.featured === true;
   formTitle.textContent = 'Edit project';
   cancelBtn.hidden = false;
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -162,11 +172,28 @@ async function loadAll() {
   return true;
 }
 
+async function loadCategoryCounts() {
+  categoryCountsEl.textContent = 'Loading category counts...';
+  try {
+    const counts = await Promise.all(CATEGORIES.map(async (category) => {
+      const result = await getCountFromServer(
+        query(projectsRef, where('category', '==', category))
+      );
+      return { category, count: result.data().count };
+    }));
+    categoryCountsEl.innerHTML = counts.map(({ category, count }) => `
+      <li><span>${escapeHTML(category)}</span><strong>${count}</strong></li>
+    `).join('');
+  } catch (err) {
+    categoryCountsEl.textContent = `Could not load category counts: ${err.message}`;
+  }
+}
+
 function render() {
   const text = searchInput.value.trim().toLowerCase();
 
   let list = activeCategory === 'All'
-    ? all
+    ? [...all]
     : all.filter((p) => p.category === activeCategory);
 
   if (text) {
@@ -175,6 +202,17 @@ function render() {
       (p.tags || []).some((t) => t.toLowerCase().includes(text))
     );
   }
+
+  list.sort((a, b) => {
+    const aYear = Number.isInteger(a.year) ? a.year : null;
+    const bYear = Number.isInteger(b.year) ? b.year : null;
+    if (aYear !== bYear) {
+      if (aYear === null) return 1;
+      if (bYear === null) return -1;
+      return bYear - aYear;
+    }
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  });
 
   countEl.textContent = `${list.length} project(s)`;
 
@@ -189,7 +227,10 @@ function render() {
         ? `<img class="thumb" src="${escapeHTML(p.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
         : ''}
       <span class="badge">${escapeHTML(p.category)}</span>
-      <h3>${escapeHTML(p.title)}</h3>
+      <h3>${escapeHTML(p.title)}${p.featured === true
+        ? ' <span class="featured-star" role="img" aria-label="Featured">★</span>'
+        : ''}</h3>
+      ${Number.isInteger(p.year) ? `<p class="project-year">Year: ${p.year}</p>` : ''}
       <p>${escapeHTML(p.description)}</p>
       <p class="tags">${(p.tags || []).map((t) => `<span>#${escapeHTML(t)}</span>`).join('')}</p>
       ${(p.link || '').startsWith('http')
@@ -205,7 +246,8 @@ function render() {
 }
 
 async function refresh() {
-  if (await loadAll()) render();
+  const [loaded] = await Promise.all([loadAll(), loadCategoryCounts()]);
+  if (loaded) render();
 }
 
 // ---------- Create / Update / Delete ----------
@@ -216,6 +258,10 @@ form.addEventListener('submit', async (event) => {
   const data = readForm();
   if (data.imageUrl && !data.imageUrl.startsWith('https://')) {
     alert('The thumbnail URL must start with https://');
+    return;
+  }
+  if (data.year !== null && (!Number.isInteger(data.year) || data.year < 1900 || data.year > 2100)) {
+    alert('The year must be a whole number between 1900 and 2100.');
     return;
   }
 
@@ -253,6 +299,55 @@ listEl.addEventListener('click', async (event) => {
       return;
     }
     await refresh();
+  }
+});
+
+clearAllBtn.addEventListener('click', async () => {
+  if (!owner) return;
+  let shouldRefresh = false;
+  try {
+    const snapshot = await getDocs(projectsRef);
+    if (snapshot.empty) {
+      alert('There are no projects to delete.');
+      return;
+    }
+    if (!confirm(`Delete all ${snapshot.size} projects? This cannot be undone.`)) return;
+
+    shouldRefresh = true;
+    for (let start = 0; start < snapshot.docs.length; start += 500) {
+      const batch = writeBatch(db);
+      snapshot.docs.slice(start, start + 500).forEach((project) => {
+        batch.delete(project.ref);
+      });
+      await batch.commit();
+    }
+  } catch (err) {
+    alert(`Could not clear all projects. Some may already have been deleted: ${err.message}`);
+    shouldRefresh = true;
+  }
+  if (shouldRefresh) await refresh();
+});
+
+exportBtn.addEventListener('click', async () => {
+  try {
+    const snapshot = await getDocs(projectsRef);
+    const projects = snapshot.docs.map((project) => ({
+      id: project.id,
+      ...project.data()
+    }));
+    const blob = new Blob([JSON.stringify(projects, null, 2)], {
+      type: 'application/json'
+    });
+    const url = URL.createObjectURL(blob);
+    const download = document.createElement('a');
+    download.href = url;
+    download.download = 'projects.json';
+    document.body.appendChild(download);
+    download.click();
+    download.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err) {
+    alert(`Could not export projects: ${err.message}`);
   }
 });
 
