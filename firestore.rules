@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // Only your verified Google account counts as the owner.
-    // Replace the email below (same one as OWNER_EMAIL in firebase-config.js).
+    // Replace this placeholder with the owner email before publishing these rules.
     function isOwner() {
       return request.auth != null
         && request.auth.token.email_verified == true
